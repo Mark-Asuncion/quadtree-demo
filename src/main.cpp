@@ -670,6 +670,8 @@ int main(void)
                 }
 
                 if (DATA.viz_circles_collider) {
+                    range.x = circle->x - circle->radius;
+                    range.y = circle->y - circle->radius;
                     DrawRectangleLinesEx(range, 1.0f, GREEN);
                 }
 
