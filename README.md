@@ -13,5 +13,3 @@ to build
 mkdir build/
 make
 ```
-# TODO
-- Make the balls bounce to each other
