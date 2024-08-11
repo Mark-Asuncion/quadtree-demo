@@ -18,8 +18,8 @@
 #define WIN_HEIGHT 720
 #define OBJECTS_MAX_SIZE 10000
 #define RECTS_INITIAL_SIZE 10
-#define CIRCLE_INITIAL_SIZE 50
-#define CIRCLE_FORCE 500.0
+#define CIRCLE_INITIAL_SIZE 100
+#define CIRCLE_VELOCITY 100.0f
 #define CIRCLE_RADIUS 10
 
 #define HEXCOLOR(hex, color)         \
@@ -50,7 +50,7 @@ Vector2 vector2_normalized(Vector2 v) {
     float length = vector2_length(v);
     if (length == 0)
         return Vector2{
-            0, 0
+            1, 1
         };
 
     return Vector2 {
@@ -73,72 +73,13 @@ struct Circle {
     float radius;
 };
 
-void circle_resolve_collision_to_rect(const Circle& self, Vector2& velocity, const Rectangle& rect) {
-    Vector2 closestPoint{
-        std::clamp(self.x, rect.x, rect.x + rect.width),
-        std::clamp(self.y, rect.y, rect.y + rect.height)
+bool is_circle_touching_circle(const Circle& self, const Circle& other) {
+    Vector2 distance{
+        self.x - other.x,
+        self.y - other.y
     };
-
-    Vector2 difference = vector2_sub({ self.x, self.y }, closestPoint);
-    Vector2 collisionNormal = vector2_normalized(difference);
-    float velocityAlongNormal = vector2_dot_product(velocity, collisionNormal);
-
-    velocity = vector2_sub(
-        velocity, vector2_scale(collisionNormal, 2 * velocityAlongNormal)
-    );
-}
-
-void circle_resolve_collision_to_circle(
-    const Circle& self,
-    Vector2& velocity1,
-    const Circle& other,
-    Vector2& velocity2
-) {
-    Vector2 self_pos{
-        self.x,
-        self.y
-    };
-    Vector2 other_pos{
-        self.x,
-        self.y
-    };
-    Vector2 distance = vector2_sub(other_pos, self_pos);
-    float distanceLength = std::sqrt(distance.x * distance.x + distance.y * distance.y);
-
-    // Check if collision has occurred
-    float totalRadius = self.radius + other.radius;
-    if (distanceLength > totalRadius) {
-        return; // No collision
-    }
-
-    // Calculate collision normal
-    Vector2 collisionNormal = vector2_normalized(distance);
-
-    // Calculate the relative velocity along the collision normal
-    Vector2 relativeVelocity = vector2_sub(velocity2, velocity1);
-    float velocityAlongNormal = vector2_dot_product(relativeVelocity, collisionNormal);
-
-    if (velocityAlongNormal > 0) {
-        return;
-    }
-
-    float mass1 = 5;
-    float mass2 = 5;
-
-    float e = 1.0f; // Coefficient of restitution (elasticity), 1.0 for perfectly elastic collision
-    float j = -(1 + e) * velocityAlongNormal;
-    j /= (1 / mass1 + 1 / mass2);
-
-    // Apply impulse to velocities
-    Vector2 impulse = vector2_scale(collisionNormal, j);
-    velocity1 = vector2_sub(velocity1, vector2_scale(impulse, 1 / mass1));
-    velocity2 = vector2_add(velocity2, vector2_scale(impulse, 1 / mass2));
-
-    // Move circles to correct for penetration
-    // float overlap = totalRadius - distanceLength;
-    // Vector2 correction = vector2_scale(collisionNormal, overlap / 2.0f);
-    // self_pos = vector2_sub(self_pos, correction);
-    // other_pos = vector2_add(other_pos, correction);
+    float sum_radius = self.radius + other.radius;
+    return vector2_length(distance) <= sum_radius * sum_radius;
 }
 
 bool is_rect_contains(const Rectangle& rect1, const Rectangle& rect2) {
@@ -158,7 +99,6 @@ bool is_rect_contains(const Rectangle& rect, const Circle& circle) {
     return (distance_x * distance_x + distance_y * distance_y) <= (circle.radius * circle.radius);
 }
 
-// collider
 struct Entity {
     enum Type {
         None,
@@ -166,7 +106,6 @@ struct Entity {
         Rect
     } type;
     void* data;
-    void* source;
 };
 
 std::string rectangle_to_string(const Rectangle& rect) {
@@ -432,17 +371,50 @@ struct CircleObj {
     Circle c;
     Vector2 velocity;
 
-    void resolve_collision(const Rectangle& rect) {
-        circle_resolve_collision_to_rect(c, velocity, rect);
+    void clamp_velocity() {
+        this->velocity.x = std::clamp(this->velocity.x, -CIRCLE_VELOCITY, CIRCLE_VELOCITY);
+        this->velocity.y = std::clamp(this->velocity.y, -CIRCLE_VELOCITY, CIRCLE_VELOCITY);
     }
 
-    void resolve_collision(CircleObj& other) {
-        circle_resolve_collision_to_circle(
-            this->c,
-            this->velocity,
-            other.c,
-            other.velocity
-        );
+    void resolve_collision(const Rectangle& rect) {
+        Circle* c = &this->c;
+        Vector2 self_pos{ c->x, c->y };
+        Vector2 closest{
+            std::clamp(c->x, rect.x, rect.x + rect.width),
+            std::clamp(c->y, rect.y, rect.y + rect.height)
+        };
+        Vector2 diff = vector2_sub(self_pos, closest);
+        Vector2 norm = vector2_normalized(diff);
+        float veloAlongNormal = vector2_dot_product(this->velocity, norm);
+        Vector2 reflection = vector2_scale(norm, -2.0f * veloAlongNormal);
+        this->velocity = vector2_add(this->velocity, reflection);
+        float penetration = c->radius - vector2_length(diff);
+        Vector2 correction = vector2_scale(norm, penetration);
+        c->x += correction.x;
+        c->y += correction.y;
+        this->clamp_velocity();
+    }
+
+    void resolve_collision(Circle& other) {
+        Circle* c = &this->c;
+        Vector2 distance{
+            c->x - other.x,
+            c->y - other.y
+        };
+        float sum_radius = c->radius + other.radius;
+        if (vector2_length(distance) > sum_radius * sum_radius) {
+            return;
+        }
+        Vector2 norm = vector2_normalized(distance);
+        float veloAlongNormal = vector2_dot_product(this->velocity, norm);
+        Vector2 reflection = vector2_scale(norm, -2.0f * veloAlongNormal);
+        this->velocity = vector2_add(this->velocity, reflection);
+
+        // correction
+        c->x = other.x + (sum_radius+1) * norm.x;
+        c->y = other.y + (sum_radius+1) * norm.y;
+
+        this->clamp_velocity();
     }
 
     void response_collision(double delta) {
@@ -453,7 +425,6 @@ struct CircleObj {
 
 struct {
     double delta;
-    double fixed_update;
 
     Rectangle rects[OBJECTS_MAX_SIZE];
 
@@ -475,7 +446,6 @@ int main(void)
     SetTargetFPS(TARGET_FPS);
 
     DATA.delta = 0.0;
-    DATA.fixed_update = 0.0;
 
     DATA.quad_tree.boundary.x = 0;
     DATA.quad_tree.boundary.y = 0;
@@ -490,7 +460,7 @@ int main(void)
 
     std::random_device rd;
     DATA.random_gen.seed(rd());
-    std::uniform_int_distribution<> g_circ_rand_force(-CIRCLE_FORCE, CIRCLE_FORCE);
+    std::uniform_int_distribution<> g_circ_rand_dir(-1, 1);
 
     int circle_objects_size = 0;
     int rects_objects_size = 0;
@@ -520,7 +490,6 @@ int main(void)
             DATA.quad_tree.insert(Entity{
                 Entity::Type::Rect,
                 (void*) &DATA.rects[i],
-                (void*) &DATA.rects[i]
             });
         }
         DATA.quad_tree.clear();
@@ -532,10 +501,11 @@ int main(void)
             DATA.circles[i].c.x = rand_posx(DATA.random_gen);
             DATA.circles[i].c.y = rand_posy(DATA.random_gen);
             DATA.circles[i].c.radius = CIRCLE_RADIUS;
-            float mass = 5;
+            int dirx = g_circ_rand_dir(DATA.random_gen);
+            int diry = g_circ_rand_dir(DATA.random_gen);
             DATA.circles[i].velocity = Vector2{
-                (float)g_circ_rand_force(DATA.random_gen) / mass,
-                (float)g_circ_rand_force(DATA.random_gen) / mass,
+                ( (dirx == 0)? 1:dirx ) * CIRCLE_VELOCITY,
+                ( (diry == 0)? 1:diry ) * CIRCLE_VELOCITY
             };
             circle_objects_size = i;
         }
@@ -548,7 +518,6 @@ int main(void)
     while (!WindowShouldClose())
     {
         double frame_start_time = GetTime();
-        bool is_physics = DATA.fixed_update > FIXED_UPDATE_SECS;
 
         BeginDrawing();
         ClearBackground(RAYWHITE);
@@ -565,7 +534,6 @@ int main(void)
                 DATA.quad_tree.insert(Entity{
                     Entity::Type::Rect,
                     (void*) &DATA.rects[i],
-                    (void*) &DATA.rects[i]
                 });
             }
 
@@ -574,7 +542,6 @@ int main(void)
                 DATA.quad_tree.insert(Entity{
                     Entity::Type::Circle,
                     (void*) circle,
-                    (void*) &DATA.circles[i]
                 });
             }
 
@@ -591,6 +558,10 @@ int main(void)
                 Circle* circle = &DATA.circles[i].c;
                 CircleObj* circleobj = &DATA.circles[i];
                 std::vector<Entity> et;
+
+                circle->x += DATA.circles[i].velocity.x * DATA.delta;
+                circle->y += DATA.circles[i].velocity.y * DATA.delta;
+
                 Rectangle range{
                     circle->x - circle->radius,
                     circle->y - circle->radius,
@@ -599,26 +570,10 @@ int main(void)
                 };
 
                 DATA.quad_tree.range(range, et);
-                if (is_physics) {
-                    // Vector2 force{
-                    //     (float)g_circ_rand_force(DATA.random_gen),
-                    //     (float)g_circ_rand_force(DATA.random_gen),
-                    // };
-                    //
-                    // Vector2 new_velocity{
-                    //     force.x / DATA.circles[i].mass,
-                    //     force.y / DATA.circles[i].mass,
-                    // };
-                    // DATA.circles[i].velocity = new_velocity;
+                {
 
                     Vector2 new_velocity = DATA.circles[i].velocity;
-
                     float radius = circle->radius;
-
-                    // Rectangle boundary{ WIN_WIDTH * .5, WIN_HEIGHT * .5, 50, 50 };
-                    // bool is_x_out = circle->x - radius < boundary.x || circle->x + radius > boundary.x + boundary.width;
-                    // bool is_y_out = circle->y - radius < boundary.y || circle->y + radius > boundary.y + boundary.height;
-
                     if (circle->x - radius < boundary.x) {
                         new_velocity.x = std::abs(new_velocity.x);
                     }
@@ -635,38 +590,35 @@ int main(void)
 
                     DATA.circles[i].velocity = new_velocity;
 
-                    // for (size_t i=0;i<et.size();i++) {
-                    //     if ( et[i].data == (void*) circle )
-                    //         continue;
-                    //
-                    //     Entity e = et[i];
-                    //     switch(e.type) {
-                    //         case Entity::Type::Circle:
-                    //             {
-                    //                 CircleObj* other = (CircleObj*) e.source;
-                    //                 circleobj->resolve_collision(*other);
-                    //                 other->response_collision(DATA.delta);
-                    //                 circle->x += circleobj->velocity.x * DATA.delta;
-                    //                 circle->y += circleobj->velocity.y * DATA.delta;
-                    //             }
-                    //             break;
-                    //         case Entity::Rect:
-                    //             {
-                    //                 Rectangle* rect = (Rectangle*) e.data;
-                    //                 DrawRectangleLines(rect->x, rect->y, rect->width, rect->height, GREEN);
-                    //             }
-                    //             break;
-                    //         default:
-                    //             break;
-                    //     }
-                    // }
-                }
+                    for (size_t i=0;i<et.size();i++) {
+                        if ( et[i].data == (void*) circle )
+                            continue;
 
-                circle->x += DATA.circles[i].velocity.x * DATA.delta;
-                circle->y += DATA.circles[i].velocity.y * DATA.delta;
+                        Entity e = et[i];
+                        switch(e.type) {
+                            case Entity::Type::Circle:
+                                {
+                                    Circle* other = (Circle*) e.data;
+                                    circleobj->resolve_collision(*other);
+                                }
+                                break;
+                            case Entity::Rect:
+                                {
+                                    Rectangle* rect = (Rectangle*) e.data;
+                                    circleobj->resolve_collision(*rect);
+                                }
+                                break;
+                            default:
+                                break;
+                        }
+                    }
+                }
 
                 if (DATA.viz_circles_pos) {
                     DrawText(circle_to_string(*circle).c_str(), circle->x, circle->y, 16, BLACK);
+                    std::string velo = "velocity { x=" + std::to_string( circleobj->velocity.x ) +
+                        ", y=" + std::to_string( circleobj->velocity.y ) + "}";
+                    DrawText(velo.c_str(), circle->x, circle->y + 18, 16, BLACK);
                 }
 
                 if (DATA.viz_circles_collider) {
@@ -675,12 +627,44 @@ int main(void)
                     DrawRectangleLinesEx(range, 1.0f, GREEN);
                 }
 
-                DrawCircle(
-                    (int)circle->x,
-                    (int)circle->y,
-                    circle->radius,
-                    (et.size() <= 1)? LIGHTGRAY:RED
-                );
+                {
+                    int collide_c = 0;
+                    for (size_t i=0;i<et.size();i++) {
+                        Entity e = et[i];
+                        if (e.data == (void*) circle) {
+                            continue;
+                        }
+                        switch(e.type) {
+                            case Entity::Type::Circle:
+                                {
+                                    Circle* other = (Circle*) e.data;
+                                    if (is_circle_touching_circle(*circle, *other)) {
+                                        collide_c++;
+                                    }
+                                }
+                                break;
+                            default:
+                                collide_c++;
+                                break;
+                        }
+                    }
+                    if (collide_c != 0) {
+                        DrawCircle(
+                            (int)circle->x,
+                            (int)circle->y,
+                            circle->radius,
+                            RED
+                        );
+                    }
+                    else {
+                        DrawCircle(
+                            (int)circle->x,
+                            (int)circle->y,
+                            circle->radius,
+                            LIGHTGRAY
+                        );
+                    }
+                }
             }
             time_start = GetTime() - time_start;
             if (DATA.quad_tree_show_time)
@@ -730,10 +714,11 @@ int main(void)
             DATA.circles[circle_objects_size].c.x = mousex;
             DATA.circles[circle_objects_size].c.y = mousey;
             DATA.circles[circle_objects_size].c.radius = CIRCLE_RADIUS;
-            float mass = 5;
+            int dirx = g_circ_rand_dir(DATA.random_gen);
+            int diry = g_circ_rand_dir(DATA.random_gen);
             DATA.circles[circle_objects_size].velocity = Vector2{
-                (float)g_circ_rand_force(DATA.random_gen) / mass,
-                (float)g_circ_rand_force(DATA.random_gen) / mass,
+                ( (dirx == 0)? 1:dirx ) * CIRCLE_VELOCITY,
+                ( (diry == 0)? 1:diry ) * CIRCLE_VELOCITY
             };
 
             circle_objects_size++;
@@ -797,21 +782,14 @@ int main(void)
             HEXCOLOR(0xcac6caff, color);
             std::string fps_text = "FPS: " + std::to_string(GetFPS());
             std::string delta_text = "Delta: " + std::to_string(DATA.delta);
-            // std::string fixed_update = "FixedUpdateDelta: " + std::to_string(DATA.fixed_update);
-            DrawRectangle(5, 5, delta_text.length() * (20 * .6), 3 * 25 + 5, color);
+            DrawRectangle(5, 5, delta_text.length() * (20 * .6), 2 * 25 + 5, color);
             DrawText(fps_text.c_str(), 10, 10, 20, DARKGREEN);
             DrawText(delta_text.c_str(), 10, 30, 20, DARKGREEN);
-            // DrawText(fixed_update.c_str(), 10, 60, 20, DARKGREEN);
-        }
-
-        if (DATA.fixed_update > FIXED_UPDATE_SECS) {
-            DATA.fixed_update -= FIXED_UPDATE_SECS;
         }
 
         EndDrawing();
         DATA.quad_tree.clear();
         DATA.delta = GetTime() - frame_start_time;
-        DATA.fixed_update += DATA.delta;
     }
 
     CloseWindow();
